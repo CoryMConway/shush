@@ -176,16 +176,16 @@ function Running({file, onDone}) {
 
   if (finished) {
     return h(Box, {flexDirection:'column'},
-      h(Text, null, `✅ Script finished: ${file}`),
-      output && h(Text, null, output),
-      h(Text, {dimColor:true}, 'Press Enter to return to menu...')
+      h(Text, {color: 'green'}, `✅ Script finished: ${file}`),
+      output && h(Text, null, '\n│ ' + output.trim().split('\n').join('\n│ ')),
+      h(Text, {dimColor:true}, '\nPress Enter to return to menu...')
     );
   }
 
   return h(Box, {flexDirection:'column'},
-    h(Text, null, `Running: ${file}`),
-    h(Text, {dimColor:true}, '(Ctrl+C to stop)'),
-    output && h(Text, null, output)
+    h(Text, {color: 'yellow'}, `Running: ${file}`),
+    output && h(Text, null, '\n│ ' + output.trim().split('\n').join('\n│ ')),
+    h(Text, {dimColor:true}, '\n(Ctrl+C to stop)')
   );
 }
 
