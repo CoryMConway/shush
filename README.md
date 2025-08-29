@@ -4,7 +4,12 @@ Shush is a tool to help you manage your shell scripts. It builds a cli tool dyna
 https://github.com/user-attachments/assets/dfc90725-5596-47f6-8e13-05f67abc0b09
 
 # Installation
-Install with the below command
+Make sure you have nodejs version 20.0.0 or above ([Download here](https://nodejs.org/en/download))
+```bash
+node -v
+```
+
+Then install with the below command
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/CoryMConway/shush/refs/heads/main/install_shush.sh)
 ```
@@ -17,7 +22,11 @@ shush
 ```
 
 # Update shush to latest code
-TODO
+All you have to do is run this update command!
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/CoryMConway/shush/refs/heads/main/update_shush.sh)
+```
+<img width="1917" height="1034" alt="image" src="https://github.com/user-attachments/assets/da99f7ae-820a-462a-a05c-fdb48fe08440" />
 
 # How it works
 If you have specificed "$HOME/managed-repos" as your storage folder for your bash scripts, and you have a directory tree like below
