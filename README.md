@@ -8,7 +8,8 @@ Install with the below command
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/CoryMConway/shush/refs/heads/main/install_shush.sh)
 ```
-<img width="1705" height="532" alt="image" src="https://github.com/user-attachments/assets/5884dd38-6751-47bd-81e7-eef149062f3b" />
+<img width="1588" height="574" alt="image" src="https://github.com/user-attachments/assets/1425edd8-e3d2-4a83-b37b-e77cedc797bb" />
+
 
 Now open a new terminal and run the "shush" command
 ```bash
@@ -28,11 +29,9 @@ managed-repos
         └── Scrape_Stocks.sh
 ```
 It will create a cli like so when you run "shush" in your terminal
-'''bash
-shush
-'''
-!!! INSERT CLI SCREENSHOT !!!
 
-Next steps
+<img width="1918" height="1045" alt="image" src="https://github.com/user-attachments/assets/4841bafb-897e-4a02-82ce-fe39020a4d60" />
+
+# Next steps
 - support python scripts
 - support node.js scripts
