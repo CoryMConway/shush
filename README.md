@@ -11,12 +11,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CoryMConway/shush/refs/heads
 ```
 <img width="1705" height="532" alt="image" src="https://github.com/user-attachments/assets/5884dd38-6751-47bd-81e7-eef149062f3b" />
 
-Now run the shush in your terminal
+Now open a new terminal and run the "shush" command
 ```bash
 shush
 ```
-
-Now it will prompt you for where you want to store your sh files. For me I created a folder at "$HOME/managed-repos"
 
 # Update shush to latest code
 TODO
