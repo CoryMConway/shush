@@ -148,18 +148,25 @@ function Menu({root, curDir, onDir, onUp, onRun, onChangeRoot, onQuit}) {
 }
 
 function Running({file, onDone}) {
-  const {stdout} = useStdout();
+  const [output, setOutput] = useState('');
   const [finished, setFinished] = useState(false);
 
   useEffect(() => {
     try { fs.chmodSync(file, 0o755); } catch {}
-    const child = spawn('bash', [file], {stdio: 'inherit'});
-    child.on('exit', () => {
-      // Leave output on screen and prompt for Enter to continue
-      stdout.write('\n\n✅ Script finished.\nPress Enter to return to menu...');
+    const child = spawn('bash', [file], {stdio: 'pipe'});
+    
+    child.stdout.on('data', (data) => {
+      setOutput(prev => prev + data.toString());
+    });
+    
+    child.stderr.on('data', (data) => {
+      setOutput(prev => prev + data.toString());
+    });
+    
+    child.on('exit', (code) => {
       setFinished(true);
     });
-  }, [file, stdout]);
+  }, [file]);
 
   useInput((input, key) => {
     if (finished && (key.return || input === '\n')) {
@@ -167,9 +174,18 @@ function Running({file, onDone}) {
     }
   });
 
+  if (finished) {
+    return h(Box, {flexDirection:'column'},
+      h(Text, null, `✅ Script finished: ${file}`),
+      output && h(Text, null, output),
+      h(Text, {dimColor:true}, 'Press Enter to return to menu...')
+    );
+  }
+
   return h(Box, {flexDirection:'column'},
     h(Text, null, `Running: ${file}`),
-    !finished && h(Text, {dimColor:true}, '(Ctrl+C to stop)')
+    h(Text, {dimColor:true}, '(Ctrl+C to stop)'),
+    output && h(Text, null, output)
   );
 }
 
