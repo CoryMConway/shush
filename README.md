@@ -1,6 +1,5 @@
 # What is it?
 Shush is a tool to help you manage your shell scripts. It builds a cli tool dynamically based off of the folder structure of a specified directory.
-So when you run "shush" in your terminal, where managed-repos is you configured shush to look for scripts at, and it sees the below directory structure
 
 https://github.com/user-attachments/assets/dfc90725-5596-47f6-8e13-05f67abc0b09
 
