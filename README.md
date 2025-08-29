@@ -18,6 +18,9 @@ shush
 
 Now it will prompt you for where you want to store your sh files. For me I created a folder at "$HOME/managed-repos"
 
+# Update shush to latest code
+TODO
+
 # How it works
 If you have specificed "$HOME/managed-repos" as your storage folder for your bash scripts, and you have a directory tree like below
 ```bash
