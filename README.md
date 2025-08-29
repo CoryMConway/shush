@@ -35,3 +35,7 @@ It will create a cli like so when you run "shush" in your terminal
 shush
 '''
 !!! INSERT CLI SCREENSHOT !!!
+
+Next steps
+- support python scripts
+- support node.js scripts
