@@ -7,7 +7,7 @@ So when you run "shush" in your terminal, where managed-repos is you configured 
 # Installation
 Install with the below command
 ```bash
-sh install_shush.sh
+bash <(curl -fsSL https://github.com/CoryMConway/shush/blob/main/install_shush.sh)
 ```
 <img width="1705" height="532" alt="image" src="https://github.com/user-attachments/assets/5884dd38-6751-47bd-81e7-eef149062f3b" />
 
