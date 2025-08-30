@@ -40,6 +40,7 @@ managed-repos
 It will create a cli like so when you run "shush" in your terminal
 
 <img width="1918" height="1045" alt="image" src="https://github.com/user-attachments/assets/4841bafb-897e-4a02-82ce-fe39020a4d60" />
+
 # Bash Scripts
 Bash scripts require a shebang line at the top of your file to specify the shell interpreter. Shush supports various shell setups across different platforms.
 
@@ -319,5 +320,4 @@ print("Hello World")
 - Always test your shebang by running the script directly: `./myscript.py`
 
 # Next steps
-- support python scripts
 - support node.js scripts
