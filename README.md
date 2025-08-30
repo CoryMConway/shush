@@ -1,7 +1,9 @@
 # What is it?
 Shush is a tool to help you manage your shell scripts. It builds a cli tool dynamically based off of the folder structure of a specified directory.
 
+
 https://github.com/user-attachments/assets/dfc90725-5596-47f6-8e13-05f67abc0b09
+
 
 # Installation
 Make sure you have nodejs version 20.0.0 or above ([Download here](https://nodejs.org/en/download))
