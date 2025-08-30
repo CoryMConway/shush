@@ -209,6 +209,13 @@ function Running({file, onDone}) {
       return;
     }
 
+    // Check if shell script needs shebang
+    if (file.endsWith('.sh') && !shebangInfo.hasShebang) {
+      setError('Shell script missing shebang line. Add a shebang like #!/bin/bash or #!/usr/bin/env bash for better portability.');
+      setFinished(true);
+      return;
+    }
+
     try { fs.chmodSync(file, 0o755); } catch {}
     
     let command, args;
@@ -221,8 +228,12 @@ function Running({file, onDone}) {
       // Regular Python file with shebang
       command = file;
       args = [];
+    } else if (file.endsWith('.sh')) {
+      // Shell scripts with shebang
+      command = file;
+      args = [];
     } else {
-      // Shell scripts
+      // Fallback (shouldn't happen with shebang checks)
       command = 'bash';
       args = [file];
     }
@@ -250,14 +261,23 @@ function Running({file, onDone}) {
 
   if (finished) {
     if (error) {
+      const isPython = file.endsWith('.py');
+      const isShell = file.endsWith('.sh');
+      
       return h(Box, {flexDirection:'column'},
         h(Text, {color: 'red'}, `❌ Error: ${file}`),
         h(Text, {color: 'red'}, error),
         h(Text, {dimColor:true}, 'Examples:'),
-        h(Text, {dimColor:true}, '  Regular: #!/usr/bin/env python3'),
-        h(Text, {dimColor:true}, '  NixOS:   #!/usr/bin/env nix-shell'),
-        h(Text, {dimColor:true}, '           #!nix-shell -i python3 -p python3'),
-        h(Text, {color: 'blue'}, 'More Info: https://github.com/CoryMConway/shush/blob/main/README.md#python-scripts'),
+        isPython && h(Text, {dimColor:true}, '  Regular: #!/usr/bin/env python3'),
+        isPython && h(Text, {dimColor:true}, '  NixOS:   #!/usr/bin/env nix-shell'),
+        isPython && h(Text, {dimColor:true}, '           #!nix-shell -i python3 -p python3'),
+        isShell && h(Text, {dimColor:true}, '  Portable: #!/usr/bin/env bash'),
+        isShell && h(Text, {dimColor:true}, '  Direct:   #!/bin/bash'),
+        isShell && h(Text, {dimColor:true}, '  NixOS:    #!/usr/bin/env nix-shell'),
+        isShell && h(Text, {dimColor:true}, '            #!nix-shell -i bash'),
+        h(Text, {color: 'blue'}, isPython 
+          ? 'More Info: https://github.com/CoryMConway/shush/blob/main/README.md#python-scripts'
+          : 'More Info: https://github.com/CoryMConway/shush/blob/main/README.md#bash-scripts'),
         h(Text, {dimColor:true}, '\nPress Enter to return to menu...')
       );
     }
