@@ -94,7 +94,15 @@ pkgs.mkShell {
 }
 ```
 
-Then use a simple shebang:
+Then use a shebang with the full path to your script's directory:
+```bash
+#!/usr/bin/env nix-shell
+#!nix-shell /full/path/to/script/directory/shell.nix -i bash
+
+curl -s "https://api.github.com/users/octocat" | jq '.name'
+```
+
+**Alternative**: Place scripts in the same directory as `shell.nix` and use:
 ```bash
 #!/usr/bin/env nix-shell
 #!nix-shell -i bash
@@ -247,7 +255,16 @@ pkgs.mkShell {
 }
 ```
 
-Then use a simple shebang:
+Then use a shebang with the full path to your script's directory:
+```python
+#!/usr/bin/env nix-shell
+#!nix-shell /full/path/to/script/directory/shell.nix -i python3
+
+import requests
+print("Hello World")
+```
+
+**Alternative**: Place scripts in the same directory as `shell.nix` and use:
 ```python
 #!/usr/bin/env nix-shell
 #!nix-shell -i python3

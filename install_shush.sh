@@ -82,12 +82,18 @@ function getShebangInfo(filePath) {
     }
     
     const firstLine = lines[0];
+    const secondLine = lines[1] || '';
     
     // Check for nix-shell shebang
     if (firstLine.includes('nix-shell')) {
+      // Check if it's using a shell.nix file (no -p packages)
+      const hasShellNix = !secondLine.includes(' -p ') && secondLine.startsWith('#!nix-shell');
+      
       return { 
         hasShebang: true, 
         type: 'nix-shell',
+        hasShellNix: hasShellNix,
+        scriptDir: path.dirname(filePath),
         shebangLines: lines.slice(0, 2).filter(line => line.startsWith('#!'))
       };
     }
@@ -221,9 +227,13 @@ function Running({file, onDone}) {
     let command, args;
     
     if (shebangInfo.type === 'nix-shell') {
-      // For nix-shell shebangs, execute the file directly
+      // For nix-shell shebangs, execute from the script's directory
       command = file;
       args = [];
+      // Change to script directory if using shell.nix
+      if (shebangInfo.hasShellNix) {
+        process.chdir(shebangInfo.scriptDir);
+      }
     } else if (file.endsWith('.py')) {
       // Regular Python file with shebang
       command = file;
@@ -270,11 +280,13 @@ function Running({file, onDone}) {
         h(Text, {dimColor:true}, 'Examples:'),
         isPython && h(Text, {dimColor:true}, '  Regular: #!/usr/bin/env python3'),
         isPython && h(Text, {dimColor:true}, '  NixOS:   #!/usr/bin/env nix-shell'),
-        isPython && h(Text, {dimColor:true}, '           #!nix-shell -i python3 -p python3'),
+        isPython && h(Text, {dimColor:true}, '           #!nix-shell /full/path/shell.nix -i python3'),
+        isPython && h(Text, {dimColor:true}, '  Or same dir: #!nix-shell -i python3'),
         isShell && h(Text, {dimColor:true}, '  Portable: #!/usr/bin/env bash'),
         isShell && h(Text, {dimColor:true}, '  Direct:   #!/bin/bash'),
         isShell && h(Text, {dimColor:true}, '  NixOS:    #!/usr/bin/env nix-shell'),
-        isShell && h(Text, {dimColor:true}, '            #!nix-shell -i bash'),
+        isShell && h(Text, {dimColor:true}, '            #!nix-shell /full/path/shell.nix -i bash'),
+        isShell && h(Text, {dimColor:true}, '  Or same dir: #!nix-shell -i bash'),
         h(Text, {color: 'blue'}, isPython 
           ? 'More Info: https://github.com/CoryMConway/shush/blob/main/README.md#python-scripts'
           : 'More Info: https://github.com/CoryMConway/shush/blob/main/README.md#bash-scripts'),
