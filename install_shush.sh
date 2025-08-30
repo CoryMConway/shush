@@ -63,6 +63,45 @@ function writeConfig(cfg) {
 }
 
 function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
+function hasShebang(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return content.startsWith('#!');
+  } catch {
+    return false;
+  }
+}
+
+function getShebangInfo(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n');
+    
+    if (!lines[0].startsWith('#!')) {
+      return { hasShebang: false, type: 'none' };
+    }
+    
+    const firstLine = lines[0];
+    
+    // Check for nix-shell shebang
+    if (firstLine.includes('nix-shell')) {
+      return { 
+        hasShebang: true, 
+        type: 'nix-shell',
+        shebangLines: lines.slice(0, 2).filter(line => line.startsWith('#!'))
+      };
+    }
+    
+    // Regular shebang
+    return { 
+      hasShebang: true, 
+      type: 'regular',
+      shebangLines: [firstLine]
+    };
+  } catch {
+    return { hasShebang: false, type: 'none' };
+  }
+}
 function listDir(cur) {
   try {
     const entries = fs.readdirSync(cur, {withFileTypes: true}).filter(d => !d.name.startsWith('.'));
@@ -74,7 +113,11 @@ function listDir(cur) {
       .filter(e => e.isFile() && e.name.endsWith('.sh'))
       .map(e => ({type: 'sh', name: e.name, full: path.join(cur, e.name)}))
       .sort((a,b) => a.name.localeCompare(b.name));
-    return [...dirs, ...shs];
+    const pys = entries
+      .filter(e => e.isFile() && e.name.endsWith('.py'))
+      .map(e => ({type: 'py', name: e.name, full: path.join(cur, e.name)}))
+      .sort((a,b) => a.name.localeCompare(b.name));
+    return [...dirs, ...shs, ...pys];
   } catch {
     return [];
   }
@@ -120,7 +163,10 @@ function Menu({root, curDir, onDir, onUp, onRun, onChangeRoot, onQuit}) {
         arr.push({key: uuidv4(), label: `📁 ${it.name}`, value: {t:'dir', p: it.full}});
     for (const it of raw)
       if (it.type === 'sh')
-        arr.push({key: uuidv4(), label: `▶️ ${it.name}`, value: {t:'sh', p: it.full}});
+        arr.push({key: uuidv4(), label: `🐚 ${it.name}`, value: {t:'sh', p: it.full}});
+    for (const it of raw)
+      if (it.type === 'py')
+        arr.push({key: uuidv4(), label: `🐍 ${it.name}`, value: {t:'py', p: it.full}});
     if (curDir !== root)
       arr.push({key: uuidv4(), label: '⬆️  .. (up)', value: {t:'up'}});
     
@@ -137,6 +183,7 @@ function Menu({root, curDir, onDir, onUp, onRun, onChangeRoot, onQuit}) {
   const onSelect = ({value}) => {
     if (value.t === 'dir') onDir(value.p);
     else if (value.t === 'sh') onRun(value.p);
+    else if (value.t === 'py') onRun(value.p);
     else if (value.t === 'up') onUp();
     else if (value.t === 'setroot') onChangeRoot();
     else if (value.t === 'quit') onQuit();
@@ -150,10 +197,37 @@ function Menu({root, curDir, onDir, onUp, onRun, onChangeRoot, onQuit}) {
 function Running({file, onDone}) {
   const [output, setOutput] = useState('');
   const [finished, setFinished] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
+    const shebangInfo = getShebangInfo(file);
+    
+    // Check if Python file needs shebang
+    if (file.endsWith('.py') && !shebangInfo.hasShebang) {
+      setError('Python script missing shebang line. Add a shebang like #!/usr/bin/env python3 or use NixOS nix-shell format.');
+      setFinished(true);
+      return;
+    }
+
     try { fs.chmodSync(file, 0o755); } catch {}
-    const child = spawn('bash', [file], {stdio: 'pipe'});
+    
+    let command, args;
+    
+    if (shebangInfo.type === 'nix-shell') {
+      // For nix-shell shebangs, execute the file directly
+      command = file;
+      args = [];
+    } else if (file.endsWith('.py')) {
+      // Regular Python file with shebang
+      command = file;
+      args = [];
+    } else {
+      // Shell scripts
+      command = 'bash';
+      args = [file];
+    }
+    
+    const child = spawn(command, args, {stdio: 'pipe'});
     
     child.stdout.on('data', (data) => {
       setOutput(prev => prev + data.toString());
@@ -175,6 +249,19 @@ function Running({file, onDone}) {
   });
 
   if (finished) {
+    if (error) {
+      return h(Box, {flexDirection:'column'},
+        h(Text, {color: 'red'}, `❌ Error: ${file}`),
+        h(Text, {color: 'red'}, error),
+        h(Text, {dimColor:true}, 'Examples:'),
+        h(Text, {dimColor:true}, '  Regular: #!/usr/bin/env python3'),
+        h(Text, {dimColor:true}, '  NixOS:   #!/usr/bin/env nix-shell'),
+        h(Text, {dimColor:true}, '           #!nix-shell -i python3 -p python3'),
+        h(Text, {color: 'blue'}, 'More Info: https://github.com/CoryMConway/shush/blob/main/README.md#python-scripts'),
+        h(Text, {dimColor:true}, '\nPress Enter to return to menu...')
+      );
+    }
+    
     return h(Box, {flexDirection:'column'},
       h(Text, {color: 'green'}, `✅ Script finished: ${file}`),
       output && h(Text, null, '\n│ ' + output.trim().split('\n').join('\n│ ')),
