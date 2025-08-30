@@ -40,6 +40,14 @@ managed-repos
 It will create a cli like so when you run "shush" in your terminal
 
 <img width="1918" height="1045" alt="image" src="https://github.com/user-attachments/assets/4841bafb-897e-4a02-82ce-fe39020a4d60" />
+# Bash Scripts
+Bash scripts work right out of the box and require no special changes. If you can run it in your terminal, you can run it from shush.
+
+# Python Scripts
+For python, you might need certain dependencies. So you MUST include a shebang to the interpreter that you want your script to run against.
+
+## Virtualenv
+TODO
 
 # Next steps
 - support python scripts
