@@ -2,361 +2,616 @@
 set -euo pipefail
 
 # =========================
-# shush Installer (Ink, NO JSX, uuid keys, pause-after-run)
+# shush Python Installer
 # =========================
 
 APP_DIR="$HOME/.shush"
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/shush"
 BIN_DIR="$HOME/.local/bin"
 LAUNCHER="$BIN_DIR/shush"
-APP_ENTRY="$APP_DIR/index.mjs"
-PKG_JSON="$APP_DIR/package.json"
+APP_ENTRY="$APP_DIR/shush.py"
 
 # ---- prereqs ----
-command -v node >/dev/null 2>&1 || { echo "❌ Node.js not found. Install Node (v18+)"; exit 1; }
-command -v npm  >/dev/null 2>&1 || { echo "❌ npm not found. Install npm"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "❌ Python3 not found. Install Python 3.7+"; exit 1; }
+
+# Check Python version
+PYTHON_VERSION=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
+PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 7 ]); then
+    echo "❌ Python 3.7+ required. Found Python $PYTHON_VERSION"
+    exit 1
+fi
 
 # ---- dirs ----
 mkdir -p "$APP_DIR" "$BIN_DIR" "$CONF_DIR"
 
-# ---- package.json ----
-if [ ! -f "$PKG_JSON" ]; then
-  cat > "$PKG_JSON" <<'JSON'
-{
-  "name": "shush",
-  "private": true,
-  "type": "module"
-}
-JSON
-fi
+# ---- install dependency ----
+echo "📦 Installing rich dependency..."
+python3 -m pip install rich
 
-# ---- deps ----
-cd "$APP_DIR"
-npm install --silent ink ink-select-input ink-text-input react uuid
-
-# ---- app (no JSX) ----
+# ---- app ----
 cat > "$APP_ENTRY" <<'EOF'
-import React, {useEffect, useMemo, useState} from 'react';
-import {render, Text, Box, useApp, useStdout, useInput} from 'ink';
-import SelectInput from 'ink-select-input';
-import TextInput from 'ink-text-input';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import {spawn} from 'node:child_process';
-import {v4 as uuidv4} from 'uuid';
+#!/usr/bin/env python3
 
-const h = React.createElement;
+import os
+import sys
+import json
+import subprocess
+import stat
+import pty as pty_module
+import select
+import termios
+import tty
+from pathlib import Path
+from typing import Optional, Dict, Any, List, Tuple
+from dataclasses import dataclass
 
-// --- config helpers ---
-const confDir = process.env.XDG_CONFIG_HOME
-  ? path.join(process.env.XDG_CONFIG_HOME, 'shush')
-  : path.join(os.homedir(), '.config', 'shush');
-const confPath = path.join(confDir, 'config.json');
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich.live import Live
+    from rich.layout import Layout
+    from rich.align import Align
+except ImportError:
+    print("❌ Required dependency 'rich' not found. Please install with: pip install rich")
+    sys.exit(1)
 
-function readConfig() {
-  try { return JSON.parse(fs.readFileSync(confPath, 'utf8')); } catch { return {}; }
-}
-function writeConfig(cfg) {
-  fs.mkdirSync(confDir, {recursive: true});
-  fs.writeFileSync(confPath, JSON.stringify(cfg, null, 2));
-}
 
-function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
-function hasShebang(filePath) {
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    return content.startsWith('#!');
-  } catch {
-    return false;
-  }
-}
-
-function getShebangInfo(filePath) {
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const lines = content.split('\n');
+class KeyboardInput:
+    """Handle keyboard input for arrow key navigation"""
     
-    if (!lines[0].startsWith('#!')) {
-      return { hasShebang: false, type: 'none' };
-    }
+    def __init__(self):
+        self.old_settings = None
     
-    const firstLine = lines[0];
-    const secondLine = lines[1] || '';
+    def __enter__(self):
+        if sys.stdin.isatty():
+            self.old_settings = termios.tcgetattr(sys.stdin.fileno())
+            tty.setraw(sys.stdin.fileno())
+            # Hide cursor while navigating
+            print("\033[?25l", end="", flush=True)
+        return self
     
-    // Check for nix-shell shebang
-    if (firstLine.includes('nix-shell')) {
-      // Check if it's using a shell.nix file (no -p packages)
-      const hasShellNix = !secondLine.includes(' -p ') && secondLine.startsWith('#!nix-shell');
-      
-      return { 
-        hasShebang: true, 
-        type: 'nix-shell',
-        hasShellNix: hasShellNix,
-        scriptDir: path.dirname(filePath),
-        shebangLines: lines.slice(0, 2).filter(line => line.startsWith('#!'))
-      };
-    }
+    def __exit__(self, type, value, traceback):
+        if sys.stdin.isatty():
+            # Show cursor when exiting
+            print("\033[?25h", end="", flush=True)
+            if self.old_settings:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self.old_settings)
     
-    // Regular shebang
-    return { 
-      hasShebang: true, 
-      type: 'regular',
-      shebangLines: [firstLine]
-    };
-  } catch {
-    return { hasShebang: false, type: 'none' };
-  }
-}
-function listDir(cur) {
-  try {
-    const entries = fs.readdirSync(cur, {withFileTypes: true}).filter(d => !d.name.startsWith('.'));
-    const dirs = entries
-      .filter(e => e.isDirectory())
-      .map(e => ({type: 'dir', name: e.name, full: path.join(cur, e.name)}))
-      .sort((a,b) => a.name.localeCompare(b.name));
-    const shs = entries
-      .filter(e => e.isFile() && e.name.endsWith('.sh'))
-      .map(e => ({type: 'sh', name: e.name, full: path.join(cur, e.name)}))
-      .sort((a,b) => a.name.localeCompare(b.name));
-    const pys = entries
-      .filter(e => e.isFile() && e.name.endsWith('.py'))
-      .map(e => ({type: 'py', name: e.name, full: path.join(cur, e.name)}))
-      .sort((a,b) => a.name.localeCompare(b.name));
-    return [...dirs, ...shs, ...pys];
-  } catch {
-    return [];
-  }
-}
+    def get_key(self):
+        """Get a single keypress"""
+        ch = sys.stdin.read(1)
+        
+        # Handle escape sequences (arrow keys)
+        if ch == '\x1b':  # ESC
+            seq = sys.stdin.read(2)
+            if seq == '[A':
+                return 'UP'
+            elif seq == '[B':
+                return 'DOWN' 
+            elif seq == '[C':
+                return 'RIGHT'
+            elif seq == '[D':
+                return 'LEFT'
+            else:
+                return 'ESC'
+        elif ch == '\r' or ch == '\n':
+            return 'ENTER'
+        elif ch == '\x03':  # Ctrl+C
+            return 'CTRL_C'
+        elif ch == 'q' or ch == 'Q':
+            return 'QUIT'
+        elif ch == 'r' or ch == 'R':
+            return 'CHANGE_ROOT'
+        else:
+            return ch
 
-// --- views ---
 
-function ChangeRoot({onCancel, onSet}) {
-  const [val, setVal] = useState(process.cwd());
-  const [err, setErr] = useState('');
-  const submit = () => {
-    const p = path.resolve(val);
-    if (!isDir(p)) { setErr('That path is not a directory.'); return; }
-    onSet(p);
-  };
-  useInput((_i, k) => { if (k.escape) onCancel(); });
-  return h(Box, {flexDirection:'column'},
-    h(Text, {bold:true}, 'Change base directory'),
-    h(Box, {marginTop:1},
-      h(Text, null, 'New path: '),
-      h(TextInput, {value:val, onChange:setVal, onSubmit:submit})
-    ),
-    err ? h(Box, {marginTop:1}, h(Text, {color:'red'}, err)) : null,
-    h(Box, {marginTop:1}, h(Text, {dimColor:true}, 'Enter to save • Esc to cancel'))
-  );
-}
+@dataclass
+class ShebangInfo:
+    has_shebang: bool
+    type: str  # 'none', 'regular', 'nix-shell'
+    has_shell_nix: bool = False
+    script_dir: str = ""
+    shebang_lines: List[str] = None
 
-function Header({curDir}) {
-  return h(Box, {flexDirection:'column', marginBottom:1},
-    h(Text, {bold:true}, 'shush'),
-    h(Text, {dimColor:true}, curDir)
-  );
-}
+    def __post_init__(self):
+        if self.shebang_lines is None:
+            self.shebang_lines = []
 
-function Menu({root, curDir, onDir, onUp, onRun, onChangeRoot, onQuit}) {
-  const raw = useMemo(() => listDir(curDir), [curDir]);
 
-  // Build items with guaranteed-unique keys using uuidv4
-  const items = useMemo(() => {
-    const arr = [];
-    for (const it of raw)
-      if (it.type === 'dir')
-        arr.push({key: uuidv4(), label: `📁 ${it.name}`, value: {t:'dir', p: it.full}});
-    for (const it of raw)
-      if (it.type === 'sh')
-        arr.push({key: uuidv4(), label: `🐚 ${it.name}`, value: {t:'sh', p: it.full}});
-    for (const it of raw)
-      if (it.type === 'py')
-        arr.push({key: uuidv4(), label: `🐍 ${it.name}`, value: {t:'py', p: it.full}});
-    if (curDir !== root)
-      arr.push({key: uuidv4(), label: '⬆️  .. (up)', value: {t:'up'}});
-    
-    // Add divider if there are files/folders
-    if (arr.length > 0) {
-      arr.push({key: uuidv4(), label: '─'.repeat(30), value: {t:'divider'}});
-    }
-    
-    arr.push({key: uuidv4(), label: '📌 Change base directory', value: {t:'setroot'}});
-    arr.push({key: uuidv4(), label: '🚪 Quit', value: {t:'quit'}});
-    return arr;
-  }, [raw, curDir, root]);
+class ConfigManager:
+    def __init__(self):
+        xdg_config = os.environ.get('XDG_CONFIG_HOME')
+        if xdg_config:
+            self.config_dir = Path(xdg_config) / 'shush'
+        else:
+            self.config_dir = Path.home() / '.config' / 'shush'
+        self.config_path = self.config_dir / 'config.json'
 
-  const onSelect = ({value}) => {
-    if (value.t === 'dir') onDir(value.p);
-    else if (value.t === 'sh') onRun(value.p);
-    else if (value.t === 'py') onRun(value.p);
-    else if (value.t === 'up') onUp();
-    else if (value.t === 'setroot') onChangeRoot();
-    else if (value.t === 'quit') onQuit();
-    // Ignore divider selection
-  };
+    def read_config(self) -> Dict[str, Any]:
+        try:
+            if self.config_path.exists():
+                return json.loads(self.config_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+        return {}
 
-  // ink-select-input uses item.key if present; passing itemKey is safe too
-  return h(SelectInput, {items, onSelect, itemKey: 'key'});
-}
+    def write_config(self, config: Dict[str, Any]):
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_path.write_text(json.dumps(config, indent=2))
 
-function Running({file, onDone}) {
-  const [output, setOutput] = useState('');
-  const [finished, setFinished] = useState(false);
-  const [error, setError] = useState('');
 
-  useEffect(() => {
-    const shebangInfo = getShebangInfo(file);
-    
-    // Check if Python file needs shebang
-    if (file.endsWith('.py') && !shebangInfo.hasShebang) {
-      setError('Python script missing shebang line. Add a shebang like #!/usr/bin/env python3 or use NixOS nix-shell format.');
-      setFinished(true);
-      return;
-    }
+class FileManager:
+    @staticmethod
+    def is_dir(path: str) -> bool:
+        try:
+            return Path(path).is_dir()
+        except:
+            return False
 
-    // Check if shell script needs shebang
-    if (file.endsWith('.sh') && !shebangInfo.hasShebang) {
-      setError('Shell script missing shebang line. Add a shebang like #!/bin/bash or #!/usr/bin/env bash for better portability.');
-      setFinished(true);
-      return;
-    }
+    @staticmethod
+    def has_shebang(file_path: str) -> bool:
+        try:
+            content = Path(file_path).read_text()
+            return content.startswith('#!')
+        except:
+            return False
 
-    try { fs.chmodSync(file, 0o755); } catch {}
-    
-    let command, args;
-    
-    if (shebangInfo.type === 'nix-shell') {
-      // For nix-shell shebangs, execute from the script's directory
-      command = file;
-      args = [];
-      // Change to script directory if using shell.nix
-      if (shebangInfo.hasShellNix) {
-        process.chdir(shebangInfo.scriptDir);
-      }
-    } else if (file.endsWith('.py')) {
-      // Regular Python file with shebang
-      command = file;
-      args = [];
-    } else if (file.endsWith('.sh')) {
-      // Shell scripts with shebang
-      command = file;
-      args = [];
-    } else {
-      // Fallback (shouldn't happen with shebang checks)
-      command = 'bash';
-      args = [file];
-    }
-    
-    const child = spawn(command, args, {stdio: 'pipe'});
-    
-    child.stdout.on('data', (data) => {
-      setOutput(prev => prev + data.toString());
-    });
-    
-    child.stderr.on('data', (data) => {
-      setOutput(prev => prev + data.toString());
-    });
-    
-    child.on('exit', (code) => {
-      setFinished(true);
-    });
-  }, [file]);
+    @staticmethod
+    def get_shebang_info(file_path: str) -> ShebangInfo:
+        try:
+            content = Path(file_path).read_text()
+            lines = content.split('\n')
 
-  useInput((input, key) => {
-    if (finished && (key.return || input === '\n')) {
-      onDone();
-    }
-  });
+            if not lines[0].startswith('#!'):
+                return ShebangInfo(has_shebang=False, type='none')
 
-  if (finished) {
-    if (error) {
-      const isPython = file.endsWith('.py');
-      const isShell = file.endsWith('.sh');
-      
-      return h(Box, {flexDirection:'column'},
-        h(Text, {color: 'red'}, `❌ Error: ${file}`),
-        h(Text, {color: 'red'}, error),
-        h(Text, {dimColor:true}, 'Examples:'),
-        isPython && h(Text, {dimColor:true}, '  Regular: #!/usr/bin/env python3'),
-        isPython && h(Text, {dimColor:true}, '  NixOS:   #!/usr/bin/env nix-shell'),
-        isPython && h(Text, {dimColor:true}, '           #!nix-shell /full/path/shell.nix -i python3'),
-        isPython && h(Text, {dimColor:true}, '  Or same dir: #!nix-shell -i python3'),
-        isShell && h(Text, {dimColor:true}, '  Portable: #!/usr/bin/env bash'),
-        isShell && h(Text, {dimColor:true}, '  Direct:   #!/bin/bash'),
-        isShell && h(Text, {dimColor:true}, '  NixOS:    #!/usr/bin/env nix-shell'),
-        isShell && h(Text, {dimColor:true}, '            #!nix-shell /full/path/shell.nix -i bash'),
-        isShell && h(Text, {dimColor:true}, '  Or same dir: #!nix-shell -i bash'),
-        h(Text, {color: 'blue'}, isPython 
-          ? 'More Info: https://github.com/CoryMConway/shush/blob/main/README.md#python-scripts'
-          : 'More Info: https://github.com/CoryMConway/shush/blob/main/README.md#bash-scripts'),
-        h(Text, {dimColor:true}, '\nPress Enter to return to menu...')
-      );
-    }
-    
-    return h(Box, {flexDirection:'column'},
-      h(Text, {color: 'green'}, `✅ Script finished: ${file}`),
-      output && h(Text, null, '\n│ ' + output.trim().split('\n').join('\n│ ')),
-      h(Text, {dimColor:true}, '\nPress Enter to return to menu...')
-    );
-  }
+            first_line = lines[0]
+            second_line = lines[1] if len(lines) > 1 else ''
 
-  return h(Box, {flexDirection:'column'},
-    h(Text, {color: 'yellow'}, `Running: ${file}`),
-    output && h(Text, null, '\n│ ' + output.trim().split('\n').join('\n│ ')),
-    h(Text, {dimColor:true}, '\n(Ctrl+C to stop)')
-  );
-}
+            # Check for nix-shell shebang
+            if 'nix-shell' in first_line:
+                has_shell_nix = ' -p ' not in second_line and second_line.startswith('#!nix-shell')
+                return ShebangInfo(
+                    has_shebang=True,
+                    type='nix-shell',
+                    has_shell_nix=has_shell_nix,
+                    script_dir=str(Path(file_path).parent),
+                    shebang_lines=[line for line in lines[:2] if line.startswith('#!')]
+                )
 
-function App() {
-  const {exit} = useApp();
-  const [cfg] = useState(() => readConfig());
-  const [root] = useState(() => cfg.root || '');
-  const [curDir, setCurDir] = useState(() => root);
-  const [mode, setMode] = useState('menu'); // 'change' | 'run' | 'menu'
-  const [runFile, setRunFile] = useState('');
+            # Regular shebang
+            return ShebangInfo(
+                has_shebang=True,
+                type='regular',
+                shebang_lines=[first_line]
+            )
+        except:
+            return ShebangInfo(has_shebang=False, type='none')
 
-  if (!root || !isDir(root)) {
-    return h(Box, {flexDirection:'column'},
-      h(Text, {color:'red', bold:true}, 'Error: No valid root directory configured.'),
-      h(Text, null, 'Please run the installer again.')
-    );
-  }
+    @staticmethod
+    def list_dir(cur_dir: str) -> List[Dict[str, str]]:
+        try:
+            path = Path(cur_dir)
+            entries = [e for e in path.iterdir() if not e.name.startswith('.')]
 
-  const onDir   = (p) => setCurDir(p);
-  const onUp    = () => setCurDir(path.dirname(curDir));
-  const onRun   = (p) => { setRunFile(p); setMode('run'); };
-  const onCR    = () => setMode('change');
-  const onQuit  = () => exit();
-  const onSet   = (p) => { 
-    const newCfg = {...cfg, root: p};
-    writeConfig(newCfg);
-    setCurDir(p); 
-    setMode('menu'); 
-  };
-  const onCancel= () => setMode('menu');
-  const onDone  = () => setMode('menu');
+            dirs = []
+            shs = []
+            pys = []
 
-  useInput((input, key) => { if (key.ctrl && input === 'r' && mode === 'menu') setMode('change'); });
+            for entry in entries:
+                full_path = str(entry)
+                if entry.is_dir():
+                    dirs.append({'type': 'dir', 'name': entry.name, 'full': full_path})
+                elif entry.is_file() and entry.suffix == '.sh':
+                    shs.append({'type': 'sh', 'name': entry.name, 'full': full_path})
+                elif entry.is_file() and entry.suffix == '.py':
+                    pys.append({'type': 'py', 'name': entry.name, 'full': full_path})
 
-  if (mode === 'change') return h(ChangeRoot, {onCancel, onSet});
-  if (mode === 'run')    return h(Running, {file: runFile, onDone});
+            # Sort each category
+            dirs.sort(key=lambda x: x['name'].lower())
+            shs.sort(key=lambda x: x['name'].lower())
+            pys.sort(key=lambda x: x['name'].lower())
 
-  return h(Box, {flexDirection:'column'},
-    h(Header, {curDir}),
-    h(Menu, {root, curDir, onDir, onUp, onRun, onChangeRoot: onCR, onQuit}),
-    h(Box, {marginTop:1}, h(Text, {dimColor:true}, 'Tips: ↑/↓ to move • Enter to select • Ctrl+R change base'))
-  );
-}
+            return dirs + shs + pys
+        except:
+            return []
 
-render(h(App));
+
+class PTYRunner:
+    def __init__(self):
+        self.master_fd = None
+        self.slave_fd = None
+        self.process = None
+
+    def run_script(self, command: str, args: List[str], cwd: Optional[str] = None) -> Tuple[int, str]:
+        """Run script with PTY for interactive support"""
+        try:
+            # Create PTY
+            self.master_fd, self.slave_fd = pty_module.openpty()
+
+            # Set terminal to raw mode to handle interactive input
+            old_settings = termios.tcgetattr(sys.stdin.fileno())
+            tty.setraw(sys.stdin.fileno())
+
+            output = ""
+            
+            try:
+                # Spawn process
+                self.process = subprocess.Popen(
+                    [command] + args,
+                    stdin=self.slave_fd,
+                    stdout=self.slave_fd,
+                    stderr=self.slave_fd,
+                    cwd=cwd,
+                    env={**os.environ, 'TERM': 'dumb', 'PYTHONUNBUFFERED': '1'},
+                    preexec_fn=os.setsid
+                )
+
+                # Close slave end in parent
+                os.close(self.slave_fd)
+                self.slave_fd = None
+
+                while True:
+                    # Check if process is still running
+                    if self.process.poll() is not None:
+                        break
+
+                    # Use select to handle both stdin and master_fd
+                    ready, _, _ = select.select([sys.stdin, self.master_fd], [], [], 0.1)
+
+                    for fd in ready:
+                        if fd == sys.stdin:
+                            # Forward user input to process
+                            try:
+                                data = os.read(sys.stdin.fileno(), 1024)
+                                if data:
+                                    os.write(self.master_fd, data)
+                            except OSError:
+                                break
+                        elif fd == self.master_fd:
+                            # Read process output
+                            try:
+                                data = os.read(self.master_fd, 1024)
+                                if data:
+                                    decoded = data.decode('utf-8', errors='replace')
+                                    # Filter out problematic escape sequences
+                                    filtered = self._filter_escape_sequences(decoded)
+                                    output += filtered
+                                    # Echo to terminal
+                                    sys.stdout.write(filtered)
+                                    sys.stdout.flush()
+                            except OSError:
+                                break
+
+                return_code = self.process.wait()
+                return return_code, output
+
+            finally:
+                # Restore terminal settings
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
+
+        except Exception as e:
+            return -1, f"Error running script: {e}"
+        finally:
+            self._cleanup()
+
+    def _filter_escape_sequences(self, data: str) -> str:
+        """Filter out problematic escape sequences"""
+        import re
+        filtered = data
+        # Remove cursor position responses
+        filtered = re.sub(r'\x1b\[[0-9;]*R', '', filtered)
+        filtered = re.sub(r'\[[0-9]+;[0-9]+R', '', filtered)
+        # Remove private mode sequences
+        filtered = re.sub(r'\x1b\[\?[0-9;]*[a-zA-Z]', '', filtered)
+        # Remove device attribute responses
+        filtered = re.sub(r'\x1b\[>[0-9;]*[a-zA-Z]', '', filtered)
+        return filtered
+
+    def _cleanup(self):
+        """Clean up file descriptors and processes"""
+        if self.master_fd:
+            os.close(self.master_fd)
+            self.master_fd = None
+        if self.slave_fd:
+            os.close(self.slave_fd)
+            self.slave_fd = None
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except:
+                try:
+                    self.process.kill()
+                    self.process.wait()
+                except:
+                    pass
+
+
+class ShushApp:
+    def __init__(self):
+        self.console = Console()
+        self.config_manager = ConfigManager()
+        self.config = self.config_manager.read_config()
+        self.root = self.config.get('root', '')
+        self.current_dir = self.root
+        self.selected_index = 0
+
+    def run(self):
+        """Main application loop"""
+        if not self.root or not FileManager.is_dir(self.root):
+            self.console.print("[red bold]Error: No valid root directory configured.[/red bold]")
+            self.console.print("Please run the installer again.")
+            return
+
+        self.current_dir = self.root
+
+        while True:
+            try:
+                self.show_menu()
+            except KeyboardInterrupt:
+                self.console.print("\n[yellow]Goodbye![/yellow]")
+                break
+
+    def show_menu(self):
+        """Display the main menu with arrow key navigation"""
+        # Get directory contents
+        items = FileManager.list_dir(self.current_dir)
+        
+        # Build menu items
+        menu_items = []
+
+        # Directories
+        for item in items:
+            if item['type'] == 'dir':
+                menu_items.append((f"📁 {item['name']}", 'dir', item['full']))
+
+        # Scripts
+        for item in items:
+            if item['type'] == 'sh':
+                menu_items.append((f"🐚 {item['name']}", 'sh', item['full']))
+            elif item['type'] == 'py':
+                menu_items.append((f"🐍 {item['name']}", 'py', item['full']))
+
+        # Add parent directory if not at root
+        if self.current_dir != self.root:
+            menu_items.append(("⬆️  .. (up)", 'up', ''))
+
+        # Control options
+        if menu_items:
+            menu_items.append(("─" * 30, 'divider', ''))
+
+        menu_items.append(("📌 Change base directory", 'change_root', ''))
+        menu_items.append(("🚪 Quit", 'quit', ''))
+
+        # Ensure selected index is valid
+        if self.selected_index >= len(menu_items):
+            self.selected_index = len(menu_items) - 1
+        elif self.selected_index < 0:
+            self.selected_index = 0
+
+        with KeyboardInput() as kb:
+            while True:
+                # Clear screen and reset cursor
+                print("\033[2J\033[H", end="", flush=True)
+                
+                # Force console to recalculate size
+                self.console.clear()
+                
+                # Header  
+                self.console.print(Panel.fit("[bold]shush[/bold]", border_style="blue"))
+                self.console.print(f"[dim]{self.current_dir}[/dim]\n")
+
+                # Display menu items with selection highlight
+                for i, (label, action_type, path) in enumerate(menu_items):
+                    if label.startswith('─'):
+                        self.console.print(f"  {label}")
+                    else:
+                        if i == self.selected_index:
+                            # Highlight selected item
+                            self.console.print(f"[bold blue]❯ {label}[/bold blue]")
+                        else:
+                            self.console.print(f"  {label}")
+
+                self.console.print("\n[dim]Tips: ↑/↓ to navigate • Enter to select • R change base • Q to quit[/dim]")
+
+                # Get user input
+                key = kb.get_key()
+                
+                if key == 'UP':
+                    self.selected_index = (self.selected_index - 1) % len(menu_items)
+                    # Skip dividers when navigating up
+                    while menu_items[self.selected_index][1] == 'divider':
+                        self.selected_index = (self.selected_index - 1) % len(menu_items)
+                        
+                elif key == 'DOWN':
+                    self.selected_index = (self.selected_index + 1) % len(menu_items)
+                    # Skip dividers when navigating down
+                    while menu_items[self.selected_index][1] == 'divider':
+                        self.selected_index = (self.selected_index + 1) % len(menu_items)
+                        
+                elif key == 'ENTER':
+                    label, action_type, path = menu_items[self.selected_index]
+                    if action_type != 'divider':
+                        self.handle_selection(action_type, path)
+                        break
+                        
+                elif key == 'QUIT' or key == 'CTRL_C':
+                    raise KeyboardInterrupt
+                    
+                elif key == 'CHANGE_ROOT':
+                    self.change_root()
+                    break
+
+    def handle_selection(self, action_type: str, path: str):
+        """Handle menu selection"""
+        if action_type == 'dir':
+            self.current_dir = path
+            self.selected_index = 0  # Reset selection when changing directories
+        elif action_type == 'up':
+            self.current_dir = str(Path(self.current_dir).parent)
+            self.selected_index = 0  # Reset selection when going up
+        elif action_type in ['sh', 'py']:
+            self.run_script(path)
+        elif action_type == 'change_root':
+            self.change_root()
+        elif action_type == 'quit':
+            raise KeyboardInterrupt
+        elif action_type == 'divider':
+            pass  # Do nothing for divider
+
+    def run_script(self, file_path: str):
+        """Run a script file"""
+        self.console.clear()
+        self.console.print(f"[yellow]Running: {Path(file_path).name}[/yellow]\n")
+
+        script_info = FileManager.get_shebang_info(file_path)
+        
+        # Validate shebang
+        if file_path.endswith('.py') and not script_info.has_shebang:
+            self.show_error(
+                file_path,
+                "Python script missing shebang line. Add a shebang like #!/usr/bin/env python3 or use NixOS nix-shell format.",
+                True
+            )
+            return
+
+        if file_path.endswith('.sh') and not script_info.has_shebang:
+            self.show_error(
+                file_path,
+                "Shell script missing shebang line. Add a shebang like #!/bin/bash or #!/usr/bin/env bash for better portability.",
+                False
+            )
+            return
+
+        # Make executable
+        try:
+            Path(file_path).chmod(Path(file_path).stat().st_mode | stat.S_IEXEC)
+        except:
+            pass
+
+        # Prepare command
+        if script_info.type == 'nix-shell':
+            command = file_path
+            args = []
+            cwd = script_info.script_dir if script_info.has_shell_nix else None
+        else:
+            command = file_path
+            args = []
+            cwd = None
+
+        # Run with PTY
+        runner = PTYRunner()
+        return_code, output = runner.run_script(command, args, cwd)
+
+        # Show completion
+        self.console.print(f"\n[green]✅ Script finished: {Path(file_path).name}[/green]")
+        if return_code != 0:
+            self.console.print(f"[red]Exit code: {return_code}[/red]")
+        
+        self.console.print("\nPress any key to return to menu...")
+        with KeyboardInput() as kb:
+            kb.get_key()
+
+    def show_error(self, file_path: str, error_msg: str, is_python: bool):
+        """Show error message with examples"""
+        self.console.print(f"[red]❌ Error: {Path(file_path).name}[/red]")
+        self.console.print(f"[red]{error_msg}[/red]\n")
+        
+        self.console.print("[dim]Examples:[/dim]")
+        if is_python:
+            self.console.print("[dim]  Regular: #!/usr/bin/env python3[/dim]")
+            self.console.print("[dim]  NixOS:   #!/usr/bin/env nix-shell[/dim]")
+            self.console.print("[dim]           #!nix-shell /full/path/shell.nix -i python3[/dim]")
+            self.console.print("[dim]  Or same dir: #!nix-shell -i python3[/dim]")
+            info_url = "https://github.com/CoryMConway/shush/blob/main/README.md#python-scripts"
+        else:
+            self.console.print("[dim]  Portable: #!/usr/bin/env bash[/dim]")
+            self.console.print("[dim]  Direct:   #!/bin/bash[/dim]")
+            self.console.print("[dim]  NixOS:    #!/usr/bin/env nix-shell[/dim]")
+            self.console.print("[dim]            #!nix-shell /full/path/shell.nix -i bash[/dim]")
+            self.console.print("[dim]  Or same dir: #!nix-shell -i bash[/dim]")
+            info_url = "https://github.com/CoryMConway/shush/blob/main/README.md#bash-scripts"
+        
+        self.console.print(f"[blue]More Info: {info_url}[/blue]")
+        self.console.print("\nPress any key to return to menu...")
+        with KeyboardInput() as kb:
+            kb.get_key()
+
+    def change_root(self):
+        """Change the root directory"""
+        self.console.clear()
+        self.console.print("[bold]Change base directory[/bold]\n")
+        self.console.print(f"Current: {self.current_dir}")
+        self.console.print("Enter new path (or press ESC to cancel):")
+        
+        # Simple text input - restore normal terminal mode temporarily
+        try:
+            old_settings = termios.tcgetattr(sys.stdin.fileno())
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
+            
+            current_path = input(f"New path [{self.current_dir}]: ").strip()
+            
+            # Use default if empty
+            if not current_path:
+                current_path = self.current_dir
+                
+        except (EOFError, KeyboardInterrupt):
+            return
+        
+        resolved_path = Path(current_path).expanduser().resolve()
+        
+        if not resolved_path.exists():
+            self.console.print(f"[red]❌ Directory does not exist: {resolved_path}[/red]")
+            self.console.print("Press any key to continue...")
+            with KeyboardInput() as kb:
+                kb.get_key()
+            return
+        
+        if not resolved_path.is_dir():
+            self.console.print("[red]❌ Path is not a directory[/red]")
+            self.console.print("Press any key to continue...")
+            with KeyboardInput() as kb:
+                kb.get_key()
+            return
+        
+        # Update configuration
+        new_config = {**self.config, 'root': str(resolved_path)}
+        self.config_manager.write_config(new_config)
+        
+        self.root = str(resolved_path)
+        self.current_dir = self.root
+        self.config = new_config
+        self.selected_index = 0  # Reset selection
+        
+        self.console.print(f"[green]✅ Changed to: {resolved_path}[/green]")
+        self.console.print("Press any key to continue...")
+        with KeyboardInput() as kb:
+            kb.get_key()
+
+
+def main():
+    """Entry point for the shush application"""
+    app = ShushApp()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
 EOF
 
-# ---- launcher (portable; no env var in shebang) ----
+chmod +x "$APP_ENTRY"
+
+# ---- launcher ----
 cat > "$LAUNCHER" <<'EOF'
 #!/usr/bin/env bash
-# Portable launcher: avoids shebang env var expansion issues.
-NODE_PATH="$HOME/.shush/node_modules" exec node "$HOME/.shush/index.mjs" "$@"
+# Launcher for Python shush
+exec python3 "$HOME/.shush/shush.py" "$@"
 EOF
 chmod +x "$LAUNCHER"
 
@@ -382,7 +637,7 @@ cat > "$CONF_DIR/config.json" <<JSON
 }
 JSON
 
-echo "✅ Installed shush"
+echo "✅ Installed shush (Python version)"
 echo "• Launcher : $LAUNCHER"
 echo "• App file : $APP_ENTRY"
 echo "• Config   : $CONF_DIR/config.json"
@@ -431,4 +686,3 @@ esac
 
 echo
 echo "Run: shush"
-

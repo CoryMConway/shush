@@ -2,25 +2,33 @@
 set -euo pipefail
 
 # =========================
-# Shush Update Script
+# shush Python Update Script
 # =========================
 
-GITHUB_URL="https://raw.githubusercontent.com/CoryMConway/shush/refs/heads/main/install_shush.sh"
+GITHUB_URL="https://raw.githubusercontent.com/CoryMConway/shush/refs/heads/main/install_shush_python.sh"
 APP_DIR="$HOME/.shush"
-APP_ENTRY="$APP_DIR/index.mjs"
-TEMP_FILE="/tmp/install_shush_latest.sh"
+APP_ENTRY="$APP_DIR/shush.py"
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/shush"
+TEMP_FILE="/tmp/install_shush_python_latest.sh"
 
-echo "🔄 Updating shush..."
+echo "🔄 Updating shush (Python version)..."
 
-# Check if shush is installed
+# Check if Python shush is installed
 if [ ! -f "$APP_ENTRY" ]; then
-    echo "❌ Shush not found at $APP_ENTRY"
-    echo "Run the install script first: sh install_shush.sh"
+    echo "❌ Python shush not found at $APP_ENTRY"
+    echo "Run the Python install script first: bash install_shush_python.sh"
     exit 1
 fi
 
+# Backup current config
+CONFIG_BACKUP=""
+if [ -f "$CONF_DIR/config.json" ]; then
+    CONFIG_BACKUP=$(cat "$CONF_DIR/config.json")
+    echo "💾 Backing up configuration..."
+fi
+
 # Download latest install script
-echo "📥 Downloading latest install_shush.sh..."
+echo "📥 Downloading latest install_shush_python.sh..."
 if command -v curl >/dev/null 2>&1; then
     curl -s -L "$GITHUB_URL" -o "$TEMP_FILE"
 elif command -v wget >/dev/null 2>&1; then
@@ -30,33 +38,45 @@ else
     exit 1
 fi
 
-# Extract React code from the downloaded file
-echo "🔧 Extracting React code..."
-# Find the line that starts the React code (after "cat > "$APP_ENTRY" <<'EOF'")
-START_LINE=$(grep -n "cat > \"\$APP_ENTRY\" <<'EOF'" "$TEMP_FILE" | cut -d: -f1)
-if [ -z "$START_LINE" ]; then
-    echo "❌ Could not find React code start marker in downloaded file"
-    rm -f "$TEMP_FILE"
+# Verify download
+if [ ! -f "$TEMP_FILE" ]; then
+    echo "❌ Failed to download install script"
     exit 1
 fi
 
-# Find the line that ends the React code (the line with just "EOF")
-END_LINE=$(tail -n +$((START_LINE + 1)) "$TEMP_FILE" | grep -n "^EOF$" | head -n 1 | cut -d: -f1)
-if [ -z "$END_LINE" ]; then
-    echo "❌ Could not find React code end marker in downloaded file"
-    rm -f "$TEMP_FILE"
-    exit 1
+# Remove old installation (but preserve config backup)
+echo "🗑️  Removing old installation..."
+rm -rf "$APP_DIR"
+
+# Run the new installer with preserved config
+echo "🔧 Installing updated version..."
+if [ -n "$CONFIG_BACKUP" ]; then
+    # Create temp script that will restore config after installation
+    RESTORE_SCRIPT="/tmp/restore_shush_config.sh"
+    cat > "$RESTORE_SCRIPT" <<EOF
+#!/bin/bash
+# Restore config after installation
+mkdir -p "$CONF_DIR"
+cat > "$CONF_DIR/config.json" <<'CONFIG_EOF'
+$CONFIG_BACKUP
+CONFIG_EOF
+echo "✅ Configuration restored"
+EOF
+    chmod +x "$RESTORE_SCRIPT"
+    
+    # Run installer with auto-config restoration
+    bash "$TEMP_FILE" <<< "$(echo "$CONFIG_BACKUP" | python3 -c "import sys, json; print(json.loads(sys.stdin.read())['root'])")"
+    
+    # Clean up
+    rm -f "$RESTORE_SCRIPT"
+else
+    # No config to restore, run installer normally
+    bash "$TEMP_FILE"
 fi
-
-# Calculate the actual end line number
-END_LINE=$((START_LINE + END_LINE))
-
-# Extract the React code (between START_LINE+1 and END_LINE-1)
-sed -n "$((START_LINE + 1)),$((END_LINE - 1))p" "$TEMP_FILE" > "$APP_ENTRY"
 
 # Cleanup
 rm -f "$TEMP_FILE"
 
-echo "✅ Shush updated successfully!"
+echo "✅ shush Python version updated successfully!"
 echo "📍 Updated: $APP_ENTRY"
 echo "🚀 Run 'shush' to use the updated version"
